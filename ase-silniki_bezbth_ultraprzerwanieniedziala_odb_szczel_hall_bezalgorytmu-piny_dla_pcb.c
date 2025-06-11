@@ -14,34 +14,34 @@
 #include "driver/pulse_cnt.h"
 
 
-#define TRIGGER0 36
-#define TRIGGER1 34
-#define TRIGGER2 38 //18
-#define TRIGGER3 38
-#define TRIGGER4 36 // jeszcze nie ma
-#define ECHO0 37
-#define ECHO1 35
-#define ECHO2 33
-#define ECHO3 39
-#define ECHO4 37  // jeszcze nie ma
-#define ODB0_GPIO 2      			// gpio dla czujnika odbiciowego 0
-#define ODB1_GPIO 40      			// gpio dla czujnika odbiciowego 1 
-#define ODB2_GPIO 13      			// gpio dla czujnika odbiciowego 2
-#define ODB3_GPIO 14      			// gpio dla czujnika odbiciowego 3
-#define ODB4_GPIO 2      			// jeszcze nie ma
-#define ODB_KAT_GPIO 42 			// gpio dla czujnika odbiciowego katowego
-#define HALL_GPIO 1    				// gpio dla czujnika halla
+#define TRIGGER0 18
+#define TRIGGER1 15
+#define TRIGGER2 12
+#define TRIGGER3 1
+#define TRIGGER4 4
+#define ECHO0 33
+#define ECHO1 16
+#define ECHO2 13
+#define ECHO3 9
+#define ECHO4 5
+#define ODB0_GPIO 34      			// gpio dla czujnika odbiciowego 0
+#define ODB1_GPIO 17      			// gpio dla czujnika odbiciowego 1 
+#define ODB2_GPIO 14      			// gpio dla czujnika odbiciowego 2
+#define ODB3_GPIO 11      			// gpio dla czujnika odbiciowego 3
+#define ODB4_GPIO 2      			
+#define ODB_KAT_GPIO 10 			// gpio dla czujnika odbiciowego katowego
+#define HALL_GPIO 8    				// gpio dla czujnika halla
 
 #define OUTPUT_PINS (1ULL << TRIGGER0) | (1ULL << TRIGGER1) | (1ULL << TRIGGER2) | (1ULL << TRIGGER3) | (1ULL << TRIGGER4)
 #define INPUT_PINS (1ULL << ECHO0) | (1ULL << ECHO1) | (1ULL << ECHO2) | (1ULL << ECHO3) | (1ULL << ECHO4) | (1ULL << SZCZEL_GPIO) | (1ULL << ODB0_GPIO) | (1ULL << ODB1_GPIO) | (1ULL << ODB2_GPIO) | (1ULL << ODB3_GPIO) | (1ULL << ODB4_GPIO) | (1ULL << ODB_KAT_GPIO)
 
-#define PWM_MOST_IN1 10
-#define PWM_MOST_IN2 9
-#define PWM_MOST_IN3 8
-#define PWM_MOST_IN4 7
+#define PWM_MOST_IN1 40
+#define PWM_MOST_IN2 39
+#define PWM_MOST_IN3 38
+#define PWM_MOST_IN4 37
 #define PWM_FREQ 1000 // 1 kHz
 
-#define SZCZEL_GPIO 18 				// gpio dla czujnika szczelinowego (na esp devkitv1 nie dziala dla gpio18)
+#define SZCZEL_GPIO 41 				// gpio dla czujnika szczelinowego (na esp devkitv1 nie dziala dla gpio18)
 #define PCNT_LOW_LIMIT  -1
 #define PCNT_HIGH_LIMIT 2048 // liczy do 270 m 2048
 	
@@ -145,8 +145,8 @@ void I2C_Task(void *pvParameter)
     i2c_master_bus_handle_t I2C_Bus_handle = NULL;
     i2c_master_bus_config_t I2C_Master_config = {
         .i2c_port = -1,
-        .sda_io_num = 5,
-        .scl_io_num = 4,
+        .sda_io_num = 6,
+        .scl_io_num = 7,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .intr_priority = 0,
         .glitch_ignore_cnt = 7,
@@ -287,8 +287,8 @@ static bool pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t
 void app_main()
 {
 	// musiałem to zakomentować bo jak nie jest nic podłączone pod piny do i2c to cała konsola jest zawalona błędami
-    //TaskHandle_t I2C_Task_handle = NULL;
-    //xTaskCreatePinnedToCore(I2C_Task, "I2C Task", 4096, NULL, 1, &I2C_Task_handle, tskNO_AFFINITY);
+    TaskHandle_t I2C_Task_handle = NULL;
+    xTaskCreatePinnedToCore(I2C_Task, "I2C Task", 4096, NULL, 1, &I2C_Task_handle, tskNO_AFFINITY);
     
 	// Inicjalizacja adc dla czujnika halla	
     adc_oneshot_unit_handle_t hall_handle;
