@@ -13,6 +13,38 @@
 #include <string.h>
 #include "driver/pulse_cnt.h"
 
+#include "host/ble_hs.h"
+#include "host/ble_uuid.h"
+#include "host/util/util.h"
+#include "nimble/ble.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "nvs_flash.h"
+#include "sdkconfig.h"
+#include <stdbool.h>
+
+#define TAG "NimBLE_Beacon"
+#define DEVICE_NAME "NimBLE_Beacon"
+
+
+void ble_uart_send(const uint8_t *data, size_t len);
+void ble_store_config_init(void);
+void adv_init(void);
+int gap_init(void);
+
+inline static void format_addr(char *addr_str, uint8_t addr[]);
+static void start_advertising(void);
+static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
+                      struct ble_gatt_access_ctxt *ctxt, void *arg);
+static int uart_tx_cb(uint16_t conn_handle, uint16_t attr_handle,
+                      struct ble_gatt_access_ctxt *ctxt, void *arg);
+
+static uint8_t own_addr_type;
+static uint8_t addr_val[6] = {0};
+static uint16_t conn_handle_global = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t tx_handle;
 
 #define TRIGGER0 18
 #define TRIGGER1 15
@@ -44,6 +76,7 @@
 #define SZCZEL_GPIO 41 				// gpio dla czujnika szczelinowego (na esp devkitv1 nie dziala dla gpio18)
 #define PCNT_LOW_LIMIT  -1
 #define PCNT_HIGH_LIMIT 2048 // liczy do 270 m 2048
+float travelled_distance;
 	
 #define INA219_ADDR 0x40
 #define INA219_CONFIG_REG_ADDR 0
@@ -283,6 +316,245 @@ static bool pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t
     return (high_task_wakeup == pdTRUE);
 }
 
+int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            if (event->connect.status == 0) {
+                conn_handle_global = event->connect.conn_handle;
+                ESP_LOGI(TAG, "Connected, handle %d", conn_handle_global);
+            } else {
+                ESP_LOGI(TAG, "Connection failed; status=%d", event->connect.status);
+                adv_init();
+            }
+            break;
+
+        case BLE_GAP_EVENT_DISCONNECT:
+            ESP_LOGI(TAG, "Disconnected, reason=%d", event->disconnect.reason);
+            if (conn_handle_global == event->disconnect.conn.conn_handle) {
+                conn_handle_global = BLE_HS_CONN_HANDLE_NONE;
+            }
+            adv_init();
+            break;
+
+        case BLE_GAP_EVENT_SUBSCRIBE:
+            ESP_LOGI(TAG, "Subscribe event: attr_handle=%d, reason=%d, prev=%d, cur=%d",
+                event->subscribe.attr_handle,
+                event->subscribe.reason,
+                event->subscribe.prev_notify,
+                event->subscribe.cur_notify);
+            break;
+
+        default:
+            break;
+    }
+    return 0;
+}
+
+static const struct ble_gatt_svc_def gatt_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = BLE_UUID128_DECLARE(0x6E, 0x40, 0x00, 0x00, 0xB5, 0xA3, 0xF3, 0x93,
+            0xE0, 0xA9, 0xE5, 0x0E, 0x24, 0xDC, 0x41, 0x3E),
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            {
+                .uuid = BLE_UUID128_DECLARE(0x6E, 0x40, 0x00, 0x01, 0xB5, 0xA3, 0xF3, 0x93,
+                    0xE0, 0xA9, 0xE5, 0x0E, 0x24, 0xDC, 0x41, 0x3E),
+                .access_cb = uart_rx_cb,
+                .flags = BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                .uuid = BLE_UUID128_DECLARE(0x6E, 0x40, 0x00, 0x02, 0xB5, 0xA3, 0xF3, 0x93,
+                    0xE0, 0xA9, 0xE5, 0x0E, 0x24, 0xDC, 0x41, 0x3E),
+                .access_cb = uart_tx_cb,
+                .val_handle = &tx_handle,
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+            },
+            {0}
+        },
+    },
+    {0}
+};
+
+
+inline static void format_addr(char *addr_str, uint8_t addr[]) {
+    sprintf(addr_str, "%02X:%02X:%02X:%02X:%02X:%02X", addr[0], addr[1],
+            addr[2], addr[3], addr[4], addr[5]);
+}
+
+static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
+                      struct ble_gatt_access_ctxt *ctxt, void *arg) {
+    const struct os_mbuf *om = ctxt->om;
+    char om_str[om->om_len + 1];
+    memcpy(om_str, om->om_data, om->om_len);
+    om_str[om->om_len] = '\0';
+    
+    if(strcmp(om_str, "w") == 0)
+    {
+		sterowanie_silnikami("przod", 50);
+	}
+	else if(strcmp(om_str, "s") == 0)
+    {
+		sterowanie_silnikami("tyl", 50);
+	}
+	else if(strcmp(om_str, "a") == 0)
+    {
+		sterowanie_silnikami("lewo", 50);
+	}
+	else if(strcmp(om_str, "d") == 0)
+    {
+		sterowanie_silnikami("prawo", 50);
+	}
+	else if(strcmp(om_str, "ws") == 0 || strcmp(om_str, "stop") == 0 || strcmp(om_str, "x") == 0)
+    {
+		sterowanie_silnikami("stop", 50);
+	}
+	else if(strcmp(om_str, "param") == 0)
+    {
+		char travelled_distance_str[6];
+	    char Total_energy_str[6];
+	    sprintf(travelled_distance_str, "%d", (int)(travelled_distance*10));
+	    sprintf(Total_energy_str, "%lu", Total_energy);
+    	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
+    	ble_uart_send(&Total_energy_str, strlen(Total_energy_str));      
+	}
+    
+    ESP_LOGI(TAG, "Received from phone: %s", om_str);
+    ble_uart_send(om->om_data, om->om_len);    
+    //ble_uart_send(Total_energy, sizeof(Total_energy));    
+    return 0;
+}
+
+static int uart_tx_cb(uint16_t conn_handle, uint16_t attr_handle,
+                      struct ble_gatt_access_ctxt *ctxt, void *arg) {
+    return 0;
+}
+
+static void start_advertising(void) {
+    struct ble_hs_adv_fields adv_fields = {0};
+    struct ble_gap_adv_params adv_params = {0};
+    const char *name = ble_svc_gap_device_name();
+    int rc;
+
+    adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    adv_fields.tx_pwr_lvl_is_present = 1;
+    adv_fields.name = (uint8_t *)name;
+    adv_fields.name_len = strlen(name);
+    adv_fields.name_is_complete = 1;
+
+    rc = ble_gap_adv_set_fields(&adv_fields);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "set adv fields failed: %d", rc);
+        return;
+    }
+
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+
+    rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+        ble_gap_event_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "adv start failed: %d", rc);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Advertising started.");
+}
+
+void adv_init(void) {
+    char addr_str[18];
+    int rc;
+
+    rc = ble_hs_util_ensure_addr(0);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "no BT address!");
+        return;
+    }
+
+    rc = ble_hs_id_infer_auto(0, &own_addr_type);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "address infer failed: %d", rc);
+        return;
+    }
+
+    rc = ble_hs_id_copy_addr(own_addr_type, addr_val, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "address copy failed: %d", rc);
+        return;
+    }
+
+    format_addr(addr_str, addr_val);
+    ESP_LOGI(TAG, "Device address: %s", addr_str);
+
+    start_advertising();
+}
+
+int gap_init(void) {
+    int rc;
+
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+
+    rc = ble_svc_gap_device_name_set(DEVICE_NAME);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "device name set failed: %d", rc);
+        return rc;
+    }
+
+    rc = ble_gatts_count_cfg(gatt_svcs);
+    if (rc != 0) return rc;
+
+    rc = ble_gatts_add_svcs(gatt_svcs);
+    if (rc != 0) return rc;
+
+    return 0;
+}
+
+void ble_uart_send(const uint8_t *data, size_t len) {
+    if (conn_handle_global == BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, "No connection; cannot send.");
+        return;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (!om) {
+        ESP_LOGE(TAG, "Failed to allocate mbuf for send.");
+        return;
+    }
+
+    int rc = ble_gattc_notify_custom(conn_handle_global, tx_handle, om);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "Notify failed: %d", rc);
+    }
+}
+
+
+static void on_stack_sync(void) {
+    adv_init();
+}
+
+static void on_stack_reset(int reason) {
+    ESP_LOGI(TAG, "nimble stack reset, reset reason: %d", reason);
+}
+
+static void nimble_host_config_init(void) {
+    ble_hs_cfg.reset_cb = on_stack_reset;
+    ble_hs_cfg.sync_cb = on_stack_sync;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+
+    ble_gatts_count_cfg(gatt_svcs);
+    ble_gatts_add_svcs(gatt_svcs);
+
+    ble_store_config_init();
+}
+
+static void nimble_host_task(void *param) {
+    ESP_LOGI(TAG, "nimble host task started");
+
+    nimble_port_run();
+
+    vTaskDelete(NULL);
+}
+
 
 void app_main()
 {
@@ -430,7 +702,34 @@ void app_main()
     
     	int szczel_state;
         int szczel_range_event;
-        float travelled_distance;
+        
+        //bth-ble init
+        esp_err_t ret = nvs_flash_init();
+
+	    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+	        ESP_ERROR_CHECK(nvs_flash_erase());
+	        ret = nvs_flash_init();
+	    }
+	    if (ret != ESP_OK) {
+	        ESP_LOGE(TAG, "failed to init NVS flash, code: %d", ret);
+	        return;
+	    }
+	
+	    ret = nimble_port_init();
+	    if (ret != ESP_OK) {
+	        ESP_LOGE(TAG, "failed to init NimBLE stack, code: %d", ret);
+	        return;
+	    }
+	
+	    int rc = gap_init();
+	    if (rc != 0) {
+	        ESP_LOGE(TAG, "failed to init GAP service, code: %d", rc);
+	        return;
+	    }
+	
+	    nimble_host_config_init();
+	
+	    xTaskCreate(nimble_host_task, "nimble_host", 4 * 1024, NULL, 5, NULL);
         
         while(1)
         {	
