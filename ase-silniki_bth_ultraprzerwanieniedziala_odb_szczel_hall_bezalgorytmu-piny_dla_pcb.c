@@ -391,22 +391,27 @@ static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
     if(strcmp(om_str, "w") == 0)
     {
 		sterowanie_silnikami("przod", 50);
+		ble_uart_send(&"Jedzie do przodu", strlen("Jedzie do przodu"));
 	}
 	else if(strcmp(om_str, "s") == 0)
     {
 		sterowanie_silnikami("tyl", 50);
+		ble_uart_send(&"Jedzie do tylu", strlen("Jedzie do tylu"));
 	}
 	else if(strcmp(om_str, "a") == 0)
     {
 		sterowanie_silnikami("lewo", 50);
+		ble_uart_send(&"Skrecil w lewo", strlen("Skrecil w lewo"));
 	}
 	else if(strcmp(om_str, "d") == 0)
     {
 		sterowanie_silnikami("prawo", 50);
+		ble_uart_send(&"Skrecil w prawo", strlen("Skrecil w prawo"));
 	}
 	else if(strcmp(om_str, "ws") == 0 || strcmp(om_str, "stop") == 0 || strcmp(om_str, "x") == 0)
     {
 		sterowanie_silnikami("stop", 50);
+		ble_uart_send(&"Zatrzymal sie", strlen("Zatrzymal sie"));
 	}
 	else if(strcmp(om_str, "param") == 0)
     {
@@ -414,13 +419,14 @@ static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
 	    char Total_energy_str[6];
 	    sprintf(travelled_distance_str, "%d", (int)(travelled_distance*10));
 	    sprintf(Total_energy_str, "%lu", Total_energy);
+	    ble_uart_send(&"Przemierzony dystans:", strlen("Przemierzony dystans:"));
     	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
+	    ble_uart_send(&"Zuzycie energii:", strlen("Zuzycie energii:"));
     	ble_uart_send(&Total_energy_str, strlen(Total_energy_str));      
 	}
     
-    ESP_LOGI(TAG, "Received from phone: %s", om_str);
-    ble_uart_send(om->om_data, om->om_len);    
-    //ble_uart_send(Total_energy, sizeof(Total_energy));    
+    //ESP_LOGI(TAG, "Received from phone: %s", om_str);
+    //ble_uart_send(om->om_data, om->om_len);
     return 0;
 }
 
