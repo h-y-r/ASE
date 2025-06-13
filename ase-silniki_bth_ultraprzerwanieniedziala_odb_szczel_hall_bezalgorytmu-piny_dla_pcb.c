@@ -802,7 +802,8 @@ void app_main()
 	        		if(distance_cm[i] < 17.5 || odb_state[i])
 	        		{
 						sterowanie_silnikami("stop", 2137);
-						ble_uart_send(&"Wykryto przeszkode", strlen("Wykryto przeszkode"));
+						ble_uart_send(&"Przeszkoda z przodu", strlen("Przeszkoda z przodu"));
+						
 					}
 	        	}
 	        	for(uint8_t i = 0; i < 2; ++i) 
@@ -811,7 +812,7 @@ void app_main()
 	        		if(distance_cm[i*4] < 10 || odb_state[i*4])
 	        		{
 						sterowanie_silnikami("stop", 2137);
-						ble_uart_send(&"Wykryto przeszkode", strlen("Wykryto przeszkode"));
+						ble_uart_send(&"Przeszkoda z boku", strlen("Przeszkoda z boku"));
 					}
 	        	}
 			}
