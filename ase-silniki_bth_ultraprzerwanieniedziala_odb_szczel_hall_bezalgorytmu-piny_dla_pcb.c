@@ -46,21 +46,21 @@ static uint8_t addr_val[6] = {0};
 static uint16_t conn_handle_global = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t tx_handle;
 
-#define TRIGGER0 18
-#define TRIGGER1 15
-#define TRIGGER2 12
-#define TRIGGER3 1
-#define TRIGGER4 4
+#define TRIGGER0 18		// czujnik lewy
+#define TRIGGER1 15		// czujnik lewy przedni
+#define TRIGGER2 12		// czujnik przedni środkowy
+#define TRIGGER3 1		// czujnik prawy przedni
+#define TRIGGER4 4		// czujnik prawy
 #define ECHO0 33
 #define ECHO1 16
 #define ECHO2 13
 #define ECHO3 9
 #define ECHO4 5
-#define ODB0_GPIO 34      			// gpio dla czujnika odbiciowego 0
-#define ODB1_GPIO 17      			// gpio dla czujnika odbiciowego 1 
-#define ODB2_GPIO 14      			// gpio dla czujnika odbiciowego 2
-#define ODB3_GPIO 11      			// gpio dla czujnika odbiciowego 3
-#define ODB4_GPIO 2      			
+#define ODB0_GPIO 34      			// czujnik lewy
+#define ODB1_GPIO 17      			// czujnik lewy przedni
+#define ODB2_GPIO 14      			// czujnik przedni środkowy
+#define ODB3_GPIO 11      			// czujnik prawy przedni
+#define ODB4_GPIO 2      			// czujnik prawy
 #define ODB_KAT_GPIO 10 			// gpio dla czujnika odbiciowego katowego
 #define HALL_GPIO 8    				// gpio dla czujnika halla
 
@@ -316,6 +316,7 @@ static bool pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t
     return (high_task_wakeup == pdTRUE);
 }
 
+bool manual_control_used = 0;
 int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
@@ -387,6 +388,7 @@ static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
     char om_str[om->om_len + 1];
     memcpy(om_str, om->om_data, om->om_len);
     om_str[om->om_len] = '\0';
+    manual_control_used = 1;
     
     if(strcmp(om_str, "w") == 0)
     {
@@ -415,6 +417,8 @@ static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
 	}
 	else if(strcmp(om_str, "param") == 0)
     {
+		manual_control_used = 0; // tylko ta komenda nie chce przejmować kontroli nad pojazdem
+		
 		char travelled_distance_str[6];
 	    char Total_energy_str[6];
 	    sprintf(travelled_distance_str, "%d", (int)(travelled_distance*10));
@@ -741,7 +745,7 @@ void app_main()
         {	
 			IO_Handler(&Ultrasonic_data); //mierzenie odległości dla czujników ultradźwiękiwych
 			
-            bool odb_state = gpio_get_level(ODB0_GPIO);
+            bool odb_state[5] = {gpio_get_level(ODB0_GPIO), gpio_get_level(ODB1_GPIO), gpio_get_level(ODB2_GPIO), gpio_get_level(ODB3_GPIO), gpio_get_level(ODB4_GPIO)};
             bool odb_kat_state = gpio_get_level(ODB_KAT_GPIO);
             int hall_adc_reading = 0;
             adc_oneshot_read(hall_handle, hall_channel, &hall_adc_reading);
@@ -763,15 +767,19 @@ void app_main()
         	}
 
             printf("========================\n");
-            printf("Napiecie: %lu\n", Bus_voltage);
-            printf("Prad: %ld\n", Current_draw);
-            printf("Moc: %lu\n", Average_power);
-            printf("Energia: %lu\n", Total_energy);
             for(uint8_t i = 0; i < NUMBER_OF_SENSORS; ++i) 
             {
-        		printf("Czujnik %d: %f cm\n", i, distance_cm[i]);
+        		printf("Czujnik ultra %d: %f cm\n", i, distance_cm[i]);
         	}
             //printf("Czujnik %lu:%llu\n", Ultrasonic_data.Current_sensor, Ultrasonic_data.Distance[Ultrasonic_data.Current_sensor]);
+	        for(int i = 0; i<NUMBER_OF_SENSORS; ++i)
+	        {
+				printf("Czujnik odbiciowy %d: %d\n", i, odb_state[i]);
+			}
+            printf("Czujnik odbiciowy katowy: %d\n", odb_kat_state);
+            //printf("Czujnik halla: %d\n", hall_adc_reading);
+            printf("Czujnik halla: %d\n", hall_state);
+            
             if (xQueueReceive(queue, &szczel_range_event, 50 / portTICK_PERIOD_MS)) {
             printf("Granica zakresu: %d\n", szczel_range_event);
 	        } else {
@@ -780,21 +788,47 @@ void app_main()
 	            travelled_distance = szczel_state*0.5; // przyjąłem odległość między szczytami ząbków jako 0,5 cm, ale na razie na oko
 	            printf("Przemierzony dystans: %f cm\n", travelled_distance);
 	        }
-            printf("Czujnik odbiciowy: %d\n", odb_state);
-            printf("Czujnik odbiciowy katowy: %d\n", odb_kat_state);
-            //printf("Czujnik halla: %d\n", hall_adc_reading);
-            printf("Czujnik halla: %d\n", hall_state);
+            printf("Napiecie: %lu\n", Bus_voltage);
+            printf("Prad: %ld\n", Current_draw);
+            printf("Moc: %lu\n", Average_power);
+            printf("Energia: %lu\n", Total_energy);
             
-            sterowanie_silnikami("przod", 50);
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-            sterowanie_silnikami("tyl", 50);
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-            sterowanie_silnikami("lewo", 50);
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-            sterowanie_silnikami("prawo", 50);
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-            sterowanie_silnikami("stop", 2137); //tu wypełnienie nie ma znaczenia
-            vTaskDelay(200 / portTICK_PERIOD_MS);
-            //vTaskDelay(DELAY_MS / portTICK_PERIOD_MS);
+            // zabezpieczenie, żeby podczas manualnego sterowania pojazdem pojazd nie wjechał w przeszkodę
+            if(manual_control_used)
+            {
+				// warunek dla przednich czujników
+				for(uint8_t i = 1; i < NUMBER_OF_SENSORS-1; ++i) 
+	            {
+	        		if(distance_cm[i] < 17.5 || odb_state[i])
+	        		{
+						sterowanie_silnikami("stop", 2137);
+						ble_uart_send(&"Wykryto przeszkode", strlen("Wykryto przeszkode"));
+					}
+	        	}
+	        	for(uint8_t i = 0; i < 2; ++i) 
+	            {
+					// warunek dla czujników bocznych
+	        		if(distance_cm[i*4] < 10 || odb_state[i*4])
+	        		{
+						sterowanie_silnikami("stop", 2137);
+						ble_uart_send(&"Wykryto przeszkode", strlen("Wykryto przeszkode"));
+					}
+	        	}
+			}
+            
+            
+            // test silników
+//            sterowanie_silnikami("przod", 50);
+//            vTaskDelay(200 / portTICK_PERIOD_MS);
+//            sterowanie_silnikami("tyl", 50);
+//            vTaskDelay(200 / portTICK_PERIOD_MS);
+//            sterowanie_silnikami("lewo", 50);
+//            vTaskDelay(200 / portTICK_PERIOD_MS);
+//            sterowanie_silnikami("prawo", 50);
+//            vTaskDelay(200 / portTICK_PERIOD_MS);
+//            sterowanie_silnikami("stop", 2137); //tu wypełnienie nie ma znaczenia
+//            vTaskDelay(200 / portTICK_PERIOD_MS);
+            
+            vTaskDelay(DELAY_MS / portTICK_PERIOD_MS);
         }
 }
