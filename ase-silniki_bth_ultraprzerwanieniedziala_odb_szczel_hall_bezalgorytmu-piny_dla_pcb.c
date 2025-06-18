@@ -1,17 +1,19 @@
 #include <stdio.h>
-#include "freertos/FreeRTOS.h"
+#include "freertos/FreeRTOS.h" 
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/gpio_filter.h"
-#include "driver/gptimer.h"
+#include "driver/gptimer.h"		// timer
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include <unistd.h>
 #include "esp_adc/adc_oneshot.h"
-#include "driver/mcpwm.h"
-#include "soc/mcpwm_periph.h"
+#include "driver/mcpwm.h"		// biblioteka silników
+#include "soc/mcpwm_periph.h"	// -//-
 #include <string.h>
-#include "driver/pulse_cnt.h"
+#include "driver/pulse_cnt.h"	// licznik impulsów do czujnika szczelinowego
+#include <sys/time.h>			// ustawianie czasu rtc
+#include <time.h>				// zliczanie czasu z rtc
 
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
@@ -75,8 +77,11 @@ static uint16_t tx_handle;
 
 #define SZCZEL_GPIO 41 				// gpio dla czujnika szczelinowego (na esp devkitv1 nie dziala dla gpio18)
 #define PCNT_LOW_LIMIT  -1
-#define PCNT_HIGH_LIMIT 2048 // liczy do 270 m 2048
+#define PCNT_HIGH_LIMIT 10240 // liczy do 5120 cm, czyli 51 m
 float travelled_distance;
+
+bool start_driving = 0;
+time_t driving_time;
 	
 #define INA219_ADDR 0x40
 #define INA219_CONFIG_REG_ADDR 0
@@ -316,7 +321,6 @@ static bool pcnt_on_reach(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t
     return (high_task_wakeup == pdTRUE);
 }
 
-bool manual_control_used = 0;
 int ble_gap_event_cb(struct ble_gap_event *event, void *arg) {
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
@@ -382,57 +386,106 @@ inline static void format_addr(char *addr_str, uint8_t addr[]) {
             addr[2], addr[3], addr[4], addr[5]);
 }
 
+bool BTH_manual_control_used = 0;
+bool BTH_do_it_one_time = 0;
+char BTH_om_prev_state[6] = "";
+char BTH_om_data_holder[6] = ""; 
 static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
-                      struct ble_gatt_access_ctxt *ctxt, void *arg) {
+                      struct ble_gatt_access_ctxt *ctxt, void *arg) 
+{
     const struct os_mbuf *om = ctxt->om;
     char om_str[om->om_len + 1];
     memcpy(om_str, om->om_data, om->om_len);
     om_str[om->om_len] = '\0';
-    manual_control_used = 1;
+    if(strcmp(om_str, BTH_om_prev_state) != 0)
+    {
+		BTH_do_it_one_time = 0;
+	}
+	else if(BTH_do_it_one_time)
+	{
+		memcpy(om_str, BTH_om_prev_state, strlen(om_str));
+	}
+	else 
+	{
+		ESP_LOGE(TAG, "uart_rx_cb -> warunek strcmp(om_str, BTH_om_prev_state) NIE DZIALA");
+	}
     
-    if(strcmp(om_str, "w") == 0)
+    if(strcmp(om_str, "start") == 0 && BTH_do_it_one_time != 1)
+    {
+		start_driving = 1;
+		ble_uart_send(&"Rozpoczecie jazdy", strlen("Rozpoczecie jazdy"));
+		
+		BTH_do_it_one_time = 1;
+	}
+    if(strcmp(om_str, "mc") == 0 && BTH_do_it_one_time != 1) //manual_control (wymagane włączenie tego do ręczego kierowania pojazdem)
+    {
+		BTH_manual_control_used = !BTH_manual_control_used;
+		if (BTH_manual_control_used)
+		{
+			ble_uart_send(&"Sterujesz pojazdem", strlen("Sterujesz pojazdem"));
+		}
+		else 
+		{	
+			ble_uart_send(&"Nie sterujesz pojazdem", strlen("Nie sterujesz pojazdem"));
+		}
+		
+		BTH_do_it_one_time = 1;
+	}
+    if(strcmp(om_str, "w") == 0 && BTH_manual_control_used)
     {
 		sterowanie_silnikami("przod", 50);
 		ble_uart_send(&"Jedzie do przodu", strlen("Jedzie do przodu"));
 	}
-	else if(strcmp(om_str, "s") == 0)
+	else if(strcmp(om_str, "s") == 0 && BTH_manual_control_used)
     {
 		sterowanie_silnikami("tyl", 50);
 		ble_uart_send(&"Jedzie do tylu", strlen("Jedzie do tylu"));
 	}
-	else if(strcmp(om_str, "a") == 0)
+	else if(strcmp(om_str, "a") == 0 && BTH_manual_control_used)
     {
 		sterowanie_silnikami("lewo", 50);
 		ble_uart_send(&"Skrecil w lewo", strlen("Skrecil w lewo"));
 	}
-	else if(strcmp(om_str, "d") == 0)
+	else if(strcmp(om_str, "d") == 0 && BTH_manual_control_used)
     {
 		sterowanie_silnikami("prawo", 50);
 		ble_uart_send(&"Skrecil w prawo", strlen("Skrecil w prawo"));
 	}
-	else if(strcmp(om_str, "ws") == 0 || strcmp(om_str, "stop") == 0 || strcmp(om_str, "x") == 0)
+	else if((strcmp(om_str, "ws") == 0 || strcmp(om_str, "stop") == 0 || strcmp(om_str, "x") == 0) && BTH_manual_control_used)
     {
 		sterowanie_silnikami("stop", 50);
 		ble_uart_send(&"Zatrzymal sie", strlen("Zatrzymal sie"));
+		BTH_manual_control_used = 1;
 	}
-	else if(strcmp(om_str, "param") == 0)
-    {
-		manual_control_used = 0; // tylko ta komenda nie chce przejmować kontroli nad pojazdem
-		
+	else if(strcmp(om_str, "param") == 0 && BTH_do_it_one_time != 1)
+    {	
+		char driving_time_str[7];
 		char travelled_distance_str[6];
 	    char Total_energy_str[6];
-	    sprintf(travelled_distance_str, "%d", (int)(travelled_distance*10));
+	    sprintf(driving_time_str, "%02d:%02d", (int)(driving_time/60), (int)(driving_time%60));
+	    sprintf(travelled_distance_str, "%d.%d", (int)(travelled_distance), (int)(travelled_distance*10));
 	    sprintf(Total_energy_str, "%lu", Total_energy);
+	    ble_uart_send(&"Czas przejazdu:", strlen("Czas przejazdu:"));
+    	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
 	    ble_uart_send(&"Przemierzony dystans:", strlen("Przemierzony dystans:"));
     	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
-	    ble_uart_send(&"Zuzycie energii:", strlen("Zuzycie energii:"));
-    	ble_uart_send(&Total_energy_str, strlen(Total_energy_str));      
+	    ble_uart_send(&"Zuzycie energii:", strlen("Zuzycie energii:")); // nrf nie pokazuje polskich znaków
+    	ble_uart_send(&Total_energy_str, strlen(Total_energy_str));
+    	
+		BTH_do_it_one_time = 1;      // jeśli to usuniesz to będzie się towykonywało z każdym rozpoczęciem pętli app_main
 	}
+	
+	if(!BTH_do_it_one_time)
+	{
+		memcpy(BTH_om_prev_state, om_str, strlen(om_str));
+	}
+	
     
     //ESP_LOGI(TAG, "Received from phone: %s", om_str);
     //ble_uart_send(om->om_data, om->om_len);
     return 0;
 }
+
 
 static int uart_tx_cb(uint16_t conn_handle, uint16_t attr_handle,
                       struct ble_gatt_access_ctxt *ctxt, void *arg) {
@@ -564,6 +617,29 @@ static void nimble_host_task(void *param) {
 
     vTaskDelete(NULL);
 }
+
+char mpc_result[38] = "";
+void make_param_chain(time_t time, float distance, uint32_t energy)//przekonwertuj liczby na chary i pododawaj
+{
+	int start_number = 33; 
+	int time_min = ((int)time)/60; //60 - max możliwa liczba
+	int time_s = ((int)time)%60; //60
+	int distance_int = distance; //5120
+	int distance_quan = ((int)distance)*10; //5 //założyłem 0,5 cm ale to na oko
+	int ener = energy; //9999 // nwm ile charów zajmie ta zmienna
+	int control_number = time_min + time_s + distance_int + distance_quan + ener;
+	int end_number = 55;
+	sprintf(mpc_result, "%d;%02d:%02d;%04d.%d;%04d;%05d;%d", start_number, time_min, time_s, distance_int, distance_quan, ener, control_number, end_number);
+}
+
+void RTC_reset()
+{
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 0;
+	settimeofday(&tv, NULL);
+}
+
 
 
 void app_main()
@@ -741,8 +817,16 @@ void app_main()
 	
 	    xTaskCreate(nimble_host_task, "nimble_host", 4 * 1024, NULL, 5, NULL);
         
+//        while(start_driving == 0)
+//		{
+//			ESP_LOGI(TAG, "Polacz sie z esp i wyslij komende 'start', aby rozpoczac dzialanie kodu");
+//			while(start_driving == 0);
+//		}
+		RTC_reset(); //reset licznika 			UWAGA!!! TO JEST DO ZMIANY BO RTC MA ZACZĄĆ LICZYĆ OD PRZEKROCZENIA LINII STARTU
+			
         while(1)
         {	
+			driving_time = time(NULL);
 			IO_Handler(&Ultrasonic_data); //mierzenie odległości dla czujników ultradźwiękiwych
 			
             bool odb_state[5] = {gpio_get_level(ODB0_GPIO), gpio_get_level(ODB1_GPIO), gpio_get_level(ODB2_GPIO), gpio_get_level(ODB3_GPIO), gpio_get_level(ODB4_GPIO)};
@@ -788,13 +872,14 @@ void app_main()
 	            travelled_distance = szczel_state*0.5; // przyjąłem odległość między szczytami ząbków jako 0,5 cm, ale na razie na oko
 	            printf("Przemierzony dystans: %f cm\n", travelled_distance);
 	        }
+            printf("Czas przejazdu: %lld\n", driving_time);
             printf("Napiecie: %lu\n", Bus_voltage);
             printf("Prad: %ld\n", Current_draw);
             printf("Moc: %lu\n", Average_power);
             printf("Energia: %lu\n", Total_energy);
             
             // zabezpieczenie, żeby podczas manualnego sterowania pojazdem pojazd nie wjechał w przeszkodę
-            if(manual_control_used)
+            if(BTH_manual_control_used)
             {
 				// warunek dla przednich czujników
 				for(uint8_t i = 1; i < NUMBER_OF_SENSORS-1; ++i) 
@@ -816,6 +901,13 @@ void app_main()
 					}
 	        	}
 			}
+			
+			// łączenie parametrów w łańcuch danych i wysyłanie nadawanie go bluetoothem
+			make_param_chain(driving_time, travelled_distance, Total_energy);
+			printf("%s\n", mpc_result); // wyświetlanie łacucha, żebyś widział aktualny wygląd łańcucha
+			ble_uart_send(&mpc_result, strlen(mpc_result));
+			
+			
             
             
             // test silników
