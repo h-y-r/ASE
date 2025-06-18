@@ -817,12 +817,17 @@ void app_main()
 	
 	    xTaskCreate(nimble_host_task, "nimble_host", 4 * 1024, NULL, 5, NULL);
         
-//        while(start_driving == 0)
-//		{
-//			ESP_LOGI(TAG, "Polacz sie z esp i wyslij komende 'start', aby rozpoczac dzialanie kodu");
-//			while(start_driving == 0);
-//		}
-		RTC_reset(); //reset licznika 			UWAGA!!! TO JEST DO ZMIANY BO RTC MA ZACZĄĆ LICZYĆ OD PRZEKROCZENIA LINII STARTU
+        // szukanie linii startu
+        sterowanie_silnikami("przod", 50);
+		while(start_driving == 0)
+		{
+			// mój pomysł był taki, że jedzie do przodu i ciągle spradza, czy coś wykrył na czujniku kątowym, a jak znajdzie to zeruje licznik czasu przejazdu
+			if(gpio_get_level(ODB_KAT_GPIO))
+			{
+				start_driving = 1;
+			}
+		}
+		RTC_reset();
 			
         while(1)
         {	
