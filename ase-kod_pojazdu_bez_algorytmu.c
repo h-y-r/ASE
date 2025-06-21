@@ -67,7 +67,7 @@ static uint16_t tx_handle;
 #define HALL_GPIO 8    				// gpio dla czujnika halla
 
 #define OUTPUT_PINS (1ULL << TRIGGER0) | (1ULL << TRIGGER1) | (1ULL << TRIGGER2) | (1ULL << TRIGGER3) | (1ULL << TRIGGER4)
-#define INPUT_PINS (1ULL << ECHO0) | (1ULL << ECHO1) | (1ULL << ECHO2) | (1ULL << ECHO3) | (1ULL << ECHO4) | (1ULL << SZCZEL_GPIO) | (1ULL << ODB0_GPIO) | (1ULL << ODB1_GPIO) | (1ULL << ODB2_GPIO) | (1ULL << ODB3_GPIO) | (1ULL << ODB4_GPIO) | (1ULL << ODB_KAT_GPIO)
+#define INPUT_PINS (1ULL << ECHO0) | (1ULL << ECHO1) | (1ULL << ECHO2) | (1ULL << ECHO3) | (1ULL << ECHO4)
 
 #define PWM_MOST_IN1 40
 #define PWM_MOST_IN2 39
@@ -459,14 +459,15 @@ static int uart_rx_cb(uint16_t conn_handle, uint16_t attr_handle,
 	}
 	else if(strcmp(om_str, "param") == 0 && BTH_do_it_one_time != 1)
     {	
-		char driving_time_str[7];
-		char travelled_distance_str[6];
-	    char Total_energy_str[6];
+		char driving_time_str[10];
+		char travelled_distance_str[10];
+	    char Total_energy_str[10];
+	    //sprintf(driving_time_str, "%02lld:%02lld", (driving_time/60), (driving_time%60));
 	    sprintf(driving_time_str, "%02d:%02d", (int)(driving_time/60), (int)(driving_time%60));
-	    sprintf(travelled_distance_str, "%d.%d", (int)(travelled_distance), (int)(travelled_distance*10));
+	    sprintf(travelled_distance_str, "%d.%d", (int)(travelled_distance), ((int)((travelled_distance)*10))%10);
 	    sprintf(Total_energy_str, "%lu", Total_energy);
 	    ble_uart_send(&"Czas przejazdu:", strlen("Czas przejazdu:"));
-    	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
+    	ble_uart_send(&driving_time_str, strlen(driving_time_str));
 	    ble_uart_send(&"Przemierzony dystans:", strlen("Przemierzony dystans:"));
     	ble_uart_send(&travelled_distance_str, strlen(travelled_distance_str));
 	    ble_uart_send(&"Zuzycie energii:", strlen("Zuzycie energii:")); // nrf nie pokazuje polskich znaków
@@ -618,18 +619,27 @@ static void nimble_host_task(void *param) {
     vTaskDelete(NULL);
 }
 
-char mpc_result[38] = "";
+//char mpc_result[38] = ""; // stara wersja łańcucha
+char mpc_result1[26] = "";
+char mpc_result2[21] = "";
 void make_param_chain(time_t time, float distance, uint32_t energy)//przekonwertuj liczby na chary i pododawaj
 {
 	int start_number = 33; 
 	int time_min = ((int)time)/60; //60 - max możliwa liczba
 	int time_s = ((int)time)%60; //60
 	int distance_int = distance; //5120
-	int distance_quan = ((int)distance)*10; //5 //założyłem 0,5 cm ale to na oko
+	int distance_quan = ((int)((distance)*10))%10; //5 //założyłem 0,5 cm ale to na oko
 	int ener = energy; //9999 // nwm ile charów zajmie ta zmienna
 	int control_number = time_min + time_s + distance_int + distance_quan + ener;
 	int end_number = 55;
-	sprintf(mpc_result, "%d;%02d:%02d;%04d.%d;%04d;%05d;%d", start_number, time_min, time_s, distance_int, distance_quan, ener, control_number, end_number);
+	//sprintf(mpc_result, "%d;%02d:%02d;%04d.%d;%04d;%05d;%d", start_number, time_min, time_s, distance_int, distance_quan, ener, control_number, end_number);
+	sprintf(mpc_result1, "%d;%02d:%02d;%04d.%d;", start_number, time_min, time_s, distance_int, distance_quan);
+	sprintf(mpc_result2, "%08d;%08d;%d", ener, control_number, end_number); // to 8 znaków dla energii jest tak na próbę
+	
+	printf("%s\n", mpc_result1); // wyświetlanie łacucha, żebyś widział aktualny wygląd łańcucha
+	printf("%s\n", mpc_result2); 
+	ble_uart_send(&mpc_result1, strlen(mpc_result1)); // ta komeda (ble_uart_send) wysyła tylko 20 znaków przez co musiałem podzielić łańcuch na dwie części
+	ble_uart_send(&mpc_result2, strlen(mpc_result2)); 
 }
 
 void RTC_reset()
@@ -832,7 +842,6 @@ void app_main()
         while(1)
         {	
 			driving_time = time(NULL);
-			IO_Handler(&Ultrasonic_data); //mierzenie odległości dla czujników ultradźwiękiwych
 			
             bool odb_state[5] = {gpio_get_level(ODB0_GPIO), gpio_get_level(ODB1_GPIO), gpio_get_level(ODB2_GPIO), gpio_get_level(ODB3_GPIO), gpio_get_level(ODB4_GPIO)};
             bool odb_kat_state = gpio_get_level(ODB_KAT_GPIO);
@@ -877,7 +886,7 @@ void app_main()
 	            travelled_distance = szczel_state*0.5; // przyjąłem odległość między szczytami ząbków jako 0,5 cm, ale na razie na oko
 	            printf("Przemierzony dystans: %f cm\n", travelled_distance);
 	        }
-            printf("Czas przejazdu: %lld\n", driving_time);
+            printf("Czas przejazdu: %02lld:%02lld\n", driving_time/60, driving_time%60);
             printf("Napiecie: %lu\n", Bus_voltage);
             printf("Prad: %ld\n", Current_draw);
             printf("Moc: %lu\n", Average_power);
@@ -909,8 +918,7 @@ void app_main()
 			
 			// łączenie parametrów w łańcuch danych i wysyłanie nadawanie go bluetoothem
 			make_param_chain(driving_time, travelled_distance, Total_energy);
-			printf("%s\n", mpc_result); // wyświetlanie łacucha, żebyś widział aktualny wygląd łańcucha
-			ble_uart_send(&mpc_result, strlen(mpc_result));
+			
 			
 			
             
